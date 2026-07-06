@@ -1,12 +1,14 @@
 import time
 import uuid
-import openai
 import numpy as np
-from sentence_transformers import SentenceTransformer
 from openai import OpenAI
+
+CHAT_MODEL = "gpt-5.4-mini"
+EMBEDDING_MODEL = "embedding"
+
 gpt_client = OpenAI(
-        api_key='',
-    base_url='https://cn2us02.opapi.win/v1'
+    api_key="dummy",
+    base_url="http://10.112.86.11:18080/v1",
 )
 def get_timestamp():
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
@@ -14,10 +16,12 @@ def get_timestamp():
 def generate_id(prefix="id"):
     return f"{prefix}_{uuid.uuid4().hex[:8]}"
 
-def get_embedding(text, model_name="all-MiniLM-L6-v2"):
-    model = SentenceTransformer(model_name)
-    embedding = model.encode([text], convert_to_numpy=True)[0]
-    return embedding
+def get_embedding(text, model_name=None):
+    response = gpt_client.embeddings.create(
+        model=EMBEDDING_MODEL,
+        input=[text],
+    )
+    return np.array(response.data[0].embedding, dtype=np.float32)
 
 def normalize_vector(vec):
     vec = np.array(vec, dtype=np.float32)
@@ -30,13 +34,11 @@ class OpenAIClient:
     def __init__(self, api_key, base_url):
         self.api_key = api_key
         self.base_url = base_url
-        openai.api_key = self.api_key
-        openai.api_base = self.base_url
 
     def chat_completion(self, model, messages, temperature=0.7, max_tokens=2000):
-        print("调用 GPT 接口，模型:", model)
+        print("调用 GPT 接口，模型:", CHAT_MODEL)
         response = gpt_client.chat.completions.create(
-            model=model,
+            model=CHAT_MODEL,
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens
