@@ -190,7 +190,7 @@ def main():
     
     # Load locomo10 dataset
     try:
-        with open("locomo_small_test.json", "r", encoding="utf-8") as f:
+        with open("locomo10.json", "r", encoding="utf-8") as f:
             dataset = json.load(f)
         print(f"成功加载数据集，共 {len(dataset)} 个样本")
     except FileNotFoundError:
