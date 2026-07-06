@@ -6,13 +6,10 @@ from long_term_memory import LongTermMemory
 from dynamic_update import DynamicUpdate
 from retrieval_and_answer import RetrievalAndAnswer
 from utils import OpenAIClient, gpt_generate_answer, gpt_extract_theme, gpt_update_profile, gpt_generate_multi_summary, get_timestamp, llm_extract_keywords, gpt_personality_analysis
+import utils
 import re
-import openai
-import time
-import tiktoken
 import os
-total_tokens = 0
-num_samples=0
+import time
 # Initialize OpenAI client
 client = OpenAIClient(
     api_key='',
@@ -193,7 +190,7 @@ def main():
     
     # Load locomo10 dataset
     try:
-        with open("locomo10.json", "r", encoding="utf-8") as f:
+        with open("locomo_small_test.json", "r", encoding="utf-8") as f:
             dataset = json.load(f)
         print(f"成功加载数据集，共 {len(dataset)} 个样本")
     except FileNotFoundError:
@@ -207,9 +204,11 @@ def main():
     # dataset = dataset  # 处理全部数据
     
     # 设置固定的输出文件名
-    output_file = "all_loco_results.json"
+    output_file = "mem_tmp_loco_final/all_loco_results.json"
+    run_usage_output_file = "mem_tmp_loco_final/run_usage_loco.json"
     
     results = []
+    token_usage_results = []
     total_samples = len(dataset)
     
     for idx, sample in enumerate(dataset):
@@ -237,14 +236,20 @@ def main():
         retrieval_system = RetrievalAndAnswer(short_mem, mid_mem, long_mem, dynamic_updater, queue_capacity=10)
         
         # Store conversation history in memory system
+        register_token_start = utils.TOTAL_LLM_TOKENS
+        register_time_start = time.time()
         for dialog in processed_dialogs:
             short_mem.add_qa_pair(dialog)
             if short_mem.is_full():
                 dynamic_updater.bulk_evict_and_update_mid_term()
             update_user_profile_from_top_segment(mid_mem, long_mem, sample_id, client)
+        register_tokens = utils.TOTAL_LLM_TOKENS - register_token_start
+        register_seconds = time.time() - register_time_start
         
         # Process QA pairs
         qa_count = len(qa_pairs)
+        e2e_token_start = utils.TOTAL_LLM_TOKENS
+        e2e_time_start = time.time()
         for qa_idx, qa in enumerate(qa_pairs):
             print(f"  处理问答 {qa_idx + 1}/{qa_count}")
             question = qa["question"]
@@ -283,6 +288,25 @@ def main():
                 speaker_b, 
                 meta_data
             )
+            retrieval_context = {
+                "retrieved_at": retrieval_result.get("retrieved_at", ""),
+                "mid_term_memory": [
+                    {
+                        "page_id": page.get("page_id", ""),
+                        "user_input": page.get("user_input", ""),
+                        "agent_response": page.get("agent_response", ""),
+                        "timestamp": page.get("timestamp", ""),
+                        "meta_info": page.get("meta_info", ""),
+                    }
+                    for page in retrieval_result.get("retrieval_queue", [])
+                ],
+                "long_term_knowledge": [
+                    {
+                        "knowledge": item.get("knowledge", "")
+                    }
+                    for item in retrieval_result.get("long_term_knowledge", [])
+                ],
+            }
             
             # Save result for the current QA pair
             results.append({
@@ -294,13 +318,26 @@ def main():
                 "original_answer": original_answer,
                 "category": category,
                 "evidence": evidence,
+                "retrieval_context": retrieval_context,
                 "timestamp": get_timestamp(),
             })
+        e2e_tokens = utils.TOTAL_LLM_TOKENS - e2e_token_start
+        e2e_seconds = time.time() - e2e_time_start
+        token_usage_results.append({
+            "sample_id": sample_id,
+            "register_tokens": register_tokens,
+            "register_seconds": register_seconds,
+            "e2e_tokens": e2e_tokens,
+            "e2e_seconds": e2e_seconds,
+            "qa_count": qa_count,
+        })
     
         # 每处理完一个样本就保存一次结果（实时保存）
         try:
             with open(output_file, "w", encoding="utf-8") as f:
                 json.dump(results, f, ensure_ascii=False, indent=2)
+            with open(run_usage_output_file, "w", encoding="utf-8") as f:
+                json.dump(token_usage_results, f, ensure_ascii=False, indent=2)
             print(f"样本 {idx + 1} 处理完成，结果已保存到 {output_file}")
         except Exception as e:
             print(f"保存结果时出错：{e}")
@@ -309,6 +346,8 @@ def main():
     try:
         with open(output_file, "w", encoding="utf-8") as f:
             json.dump(results, f, ensure_ascii=False, indent=2)
+        with open(run_usage_output_file, "w", encoding="utf-8") as f:
+            json.dump(token_usage_results, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"最终保存结果时出错：{e}")
 

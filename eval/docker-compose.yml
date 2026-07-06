@@ -1,0 +1,7 @@
+services:
+  memoryos-eval:
+    build: .
+    container_name: memoryos-eval
+    volumes:
+      - /data/memoryos-result:/app/eval/mem_tmp_loco_final
+    command: ./run_eval.sh

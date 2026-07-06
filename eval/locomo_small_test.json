@@ -1,0 +1,125 @@
+[
+  {
+    "sample_id": "small_sample_001",
+    "qa": [
+      {
+        "question": "What instrument does Alice practice every morning?",
+        "answer": "violin",
+        "evidence": [
+          "D2:3"
+        ],
+        "category": 1
+      }
+    ],
+    "conversation": {
+      "speaker_a": "Alice",
+      "speaker_b": "Bob",
+      "session_1_date_time": "9:00 am on 1 January, 2024",
+      "session_1": [
+        {
+          "speaker": "Alice",
+          "dia_id": "D1:1",
+          "text": "Hi Bob, I am Alice. I live in Hangzhou and work as a data scientist, and I want you to remember my morning wellness routine."
+        },
+        {
+          "speaker": "Bob",
+          "dia_id": "D1:2",
+          "text": "Sure, Alice. Tell me about your morning wellness routine."
+        },
+        {
+          "speaker": "Alice",
+          "dia_id": "D1:3",
+          "text": "I practice violin every morning before work because it helps me stay calm and focused."
+        },
+        {
+          "speaker": "Bob",
+          "dia_id": "D1:4",
+          "text": "I will remember that violin practice is part of your morning routine."
+        },
+        {
+          "speaker": "Alice",
+          "dia_id": "D1:5",
+          "text": "After violin practice, I drink green tea and write a short health journal."
+        },
+        {
+          "speaker": "Bob",
+          "dia_id": "D1:6",
+          "text": "So your routine includes violin, green tea, and a short health journal."
+        },
+        {
+          "speaker": "Alice",
+          "dia_id": "D1:7",
+          "text": "Please remember that I am allergic to peanuts, so my breakfast must avoid peanut snacks."
+        },
+        {
+          "speaker": "Bob",
+          "dia_id": "D1:8",
+          "text": "Understood. I will remember that your morning routine and breakfast should avoid peanuts."
+        }
+      ],
+      "session_2_date_time": "8:30 am on 2 January, 2024",
+      "session_2": [
+        {
+          "speaker": "Alice",
+          "dia_id": "D2:1",
+          "text": "Good morning Bob, I followed the same morning wellness routine again today."
+        },
+        {
+          "speaker": "Bob",
+          "dia_id": "D2:2",
+          "text": "Good morning Alice. Did you practice violin again?"
+        },
+        {
+          "speaker": "Alice",
+          "dia_id": "D2:3",
+          "text": "Yes, I practiced violin for twenty minutes before work, then drank green tea and wrote in my health journal."
+        },
+        {
+          "speaker": "Bob",
+          "dia_id": "D2:4",
+          "text": "That matches your routine: violin first, then green tea and health journaling."
+        },
+        {
+          "speaker": "Alice",
+          "dia_id": "D2:5",
+          "text": "This routine is important because it reduces my stress before data science work."
+        },
+        {
+          "speaker": "Bob",
+          "dia_id": "D2:6",
+          "text": "I will remember that the routine helps reduce your stress before work."
+        },
+        {
+          "speaker": "Alice",
+          "dia_id": "D2:7",
+          "text": "My goal this year is to build a mental health chatbot that remembers routines, allergies, and user preferences."
+        },
+        {
+          "speaker": "Bob",
+          "dia_id": "D2:8",
+          "text": "That goal fits your interest in memory assistants, health routines, and preference tracking."
+        },
+        {
+          "speaker": "Alice",
+          "dia_id": "D2:9",
+          "text": "Please keep this as a stable preference: concise reminders about my violin routine, green tea, journal, and peanut allergy are best."
+        },
+        {
+          "speaker": "Bob",
+          "dia_id": "D2:10",
+          "text": "Got it. I will keep reminders concise and remember your violin routine, green tea, journal, and peanut allergy."
+        },
+        {
+          "speaker": "Alice",
+          "dia_id": "D2:11",
+          "text": "If I ask about breakfast or morning planning later, remind me to avoid peanuts and keep the routine short."
+        },
+        {
+          "speaker": "Bob",
+          "dia_id": "D2:12",
+          "text": "I will remember to suggest peanut-free breakfast ideas and short morning plans."
+        }
+      ]
+    }
+  }
+]

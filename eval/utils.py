@@ -5,6 +5,8 @@ from openai import OpenAI
 
 CHAT_MODEL = "gpt-5.4-mini"
 EMBEDDING_MODEL = "embedding"
+MAX_RETRIES = 6
+TOTAL_LLM_TOKENS = 0
 
 gpt_client = OpenAI(
     api_key="dummy",
@@ -17,11 +19,18 @@ def generate_id(prefix="id"):
     return f"{prefix}_{uuid.uuid4().hex[:8]}"
 
 def get_embedding(text, model_name=None):
-    response = gpt_client.embeddings.create(
-        model=EMBEDDING_MODEL,
-        input=[text],
-    )
-    return np.array(response.data[0].embedding, dtype=np.float32)
+    for attempt in range(MAX_RETRIES):
+        try:
+            response = gpt_client.embeddings.create(
+                model=EMBEDDING_MODEL,
+                input=[text],
+            )
+            return np.array(response.data[0].embedding, dtype=np.float32)
+        except Exception as e:
+            print(f"Embedding 接口调用失败，第 {attempt + 1}/{MAX_RETRIES} 次: {e}")
+            if attempt == MAX_RETRIES - 1:
+                raise
+            time.sleep(2)
 
 def normalize_vector(vec):
     vec = np.array(vec, dtype=np.float32)
@@ -36,14 +45,29 @@ class OpenAIClient:
         self.base_url = base_url
 
     def chat_completion(self, model, messages, temperature=0.7, max_tokens=2000):
+        global TOTAL_LLM_TOKENS
+
         print("调用 GPT 接口，模型:", CHAT_MODEL)
-        response = gpt_client.chat.completions.create(
-            model=CHAT_MODEL,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens
-        )
-        return response.choices[0].message.content.strip()
+        for attempt in range(MAX_RETRIES):
+            try:
+                response = gpt_client.chat.completions.create(
+                    model=CHAT_MODEL,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens
+                )
+                usage = getattr(response, "usage", None)
+                if usage:
+                    total_tokens = getattr(usage, "total_tokens", 0)
+                    if not total_tokens and isinstance(usage, dict):
+                        total_tokens = usage.get("total_tokens", 0)
+                    TOTAL_LLM_TOKENS += total_tokens
+                return response.choices[0].message.content.strip()
+            except Exception as e:
+                print(f"GPT 接口调用失败，第 {attempt + 1}/{MAX_RETRIES} 次: {e}")
+                if attempt == MAX_RETRIES - 1:
+                    raise
+                time.sleep(2)
 
 def gpt_generate_answer(prompt, messages, client):
     return client.chat_completion(model="gpt-4o-mini", messages=messages, temperature=0.7, max_tokens=2000)
