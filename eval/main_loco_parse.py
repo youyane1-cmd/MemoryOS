@@ -19,6 +19,27 @@ client = OpenAIClient(
 # Heat threshold
 H_THRESHOLD = 5.0
 
+def load_json_list(file_path):
+    if not os.path.exists(file_path):
+        return []
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception as e:
+        print(f"读取 {file_path} 失败，将使用空列表：{e}")
+        return []
+
+def cleanup_sample_memory_files(sample_id):
+    for suffix in ["short_term", "mid_term", "long_term"]:
+        file_path = f"mem_tmp_loco_final/{sample_id}_{suffix}.json"
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+                print(f"已删除未完成样本的残留文件：{file_path}")
+            except Exception as e:
+                print(f"删除残留文件 {file_path} 失败：{e}")
+
 def update_user_profile_from_top_segment(mid_mem, long_mem, sample_id, client):
     """
     Update user profile if heat exceeds threshold and extract assistant knowledge.
@@ -207,14 +228,29 @@ def main():
     output_file = "mem_tmp_loco_final/all_loco_results.json"
     run_usage_output_file = "mem_tmp_loco_final/run_usage_loco.json"
     
-    results = []
-    token_usage_results = []
+    token_usage_results = load_json_list(run_usage_output_file)
+    completed_sample_ids = {
+        item.get("sample_id")
+        for item in token_usage_results
+        if item.get("sample_id")
+    }
+    results = [
+        item
+        for item in load_json_list(output_file)
+        if item.get("sample_id") in completed_sample_ids
+    ]
+    print(f"已加载完成样本 {len(completed_sample_ids)} 个，已有结果 {len(results)} 条。")
     total_samples = len(dataset)
     
     for idx, sample in enumerate(dataset):
         print(f"正在处理样本 {idx + 1}/{total_samples}: {sample.get('sample_id', 'unknown')}")
         
         sample_id = sample.get("sample_id", "unknown_sample")
+        if sample_id in completed_sample_ids:
+            print(f"样本 {sample_id} 已在 usage 文件中记录完成，跳过。")
+            continue
+        
+        cleanup_sample_memory_files(sample_id)
         conversation_data = sample["conversation"]
         qa_pairs = sample["qa"]
         
@@ -250,6 +286,7 @@ def main():
         qa_count = len(qa_pairs)
         e2e_token_start = utils.TOTAL_LLM_TOKENS
         e2e_time_start = time.time()
+        sample_results = []
         for qa_idx, qa in enumerate(qa_pairs):
             print(f"  处理问答 {qa_idx + 1}/{qa_count}")
             question = qa["question"]
@@ -309,7 +346,7 @@ def main():
             }
             
             # Save result for the current QA pair
-            results.append({
+            sample_results.append({
                 "sample_id": sample_id,
                 "speaker_a": speaker_a,
                 "speaker_b": speaker_b,
@@ -323,6 +360,7 @@ def main():
             })
         e2e_tokens = utils.TOTAL_LLM_TOKENS - e2e_token_start
         e2e_seconds = time.time() - e2e_time_start
+        results.extend(sample_results)
         token_usage_results.append({
             "sample_id": sample_id,
             "register_tokens": register_tokens,
@@ -331,6 +369,7 @@ def main():
             "e2e_seconds": e2e_seconds,
             "qa_count": qa_count,
         })
+        completed_sample_ids.add(sample_id)
     
         # 每处理完一个样本就保存一次结果（实时保存）
         try:

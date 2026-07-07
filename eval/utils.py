@@ -10,7 +10,7 @@ TOTAL_LLM_TOKENS = 0
 
 gpt_client = OpenAI(
     api_key="dummy",
-    base_url="http://10.112.86.11:18080/v1",
+    base_url="http://10.112.86.11:80/v1",
 )
 def get_timestamp():
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())

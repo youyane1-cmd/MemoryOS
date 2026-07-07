@@ -52,12 +52,13 @@ def write_metrics_excel(total_metrics: Dict[str, float], category_metrics: List[
 
     total_sheet = wb.active
     total_sheet.title = "Total"
-    total_sheet.append(["sample_count", "precision", "recall", "f1"])
+    total_sheet.append(["sample_count", "precision", "recall", "f1", "Avg. F1"])
     total_sheet.append([
         total_metrics["sample_count"],
         total_metrics["precision"],
         total_metrics["recall"],
         total_metrics["f1"],
+        total_metrics["avg_f1"],
     ])
 
     category_sheet = wb.create_sheet("By Category")
@@ -102,13 +103,6 @@ def main(file_path: str):
             category_metrics[category][key].append(metrics[key])
             all_metrics[key].append(metrics[key])
     
-    total_metrics = {
-        "sample_count": len(data),
-        "precision": statistics.mean(all_metrics["precision"]) if all_metrics["precision"] else 0,
-        "recall": statistics.mean(all_metrics["recall"]) if all_metrics["recall"] else 0,
-        "f1": statistics.mean(all_metrics["f1"]) if all_metrics["f1"] else 0,
-    }
-
     category_rows = []
     for category, metrics in sorted(category_metrics.items()):
         row = {
@@ -126,12 +120,21 @@ def main(file_path: str):
             f"F1 = {row['f1']:.4f}"
         )
 
+    total_metrics = {
+        "sample_count": len(data),
+        "precision": statistics.mean(all_metrics["precision"]) if all_metrics["precision"] else 0,
+        "recall": statistics.mean(all_metrics["recall"]) if all_metrics["recall"] else 0,
+        "f1": statistics.mean(all_metrics["f1"]) if all_metrics["f1"] else 0,
+        "avg_f1": statistics.mean([row["f1"] for row in category_rows]) if category_rows else 0,
+    }
+
     output_file = "mem_tmp_loco_final/evaluation_metrics.xlsx"
     write_metrics_excel(total_metrics, category_rows, output_file)
     print(
         f"Total: Precision = {total_metrics['precision']:.4f}, "
         f"Recall = {total_metrics['recall']:.4f}, "
-        f"F1 = {total_metrics['f1']:.4f}"
+        f"F1 = {total_metrics['f1']:.4f}, "
+        f"Avg. F1 = {total_metrics['avg_f1']:.4f}"
     )
     print(f"Excel result saved to {output_file}")
 
