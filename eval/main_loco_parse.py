@@ -62,13 +62,21 @@ def update_user_profile_from_top_segment(mid_mem, long_mem, sample_id, client):
             
             old_profile = long_mem.get_raw_user_profile(sample_id)
             
-            result = gpt_personality_analysis(un_analyzed, client)
+            try:
+                result = gpt_personality_analysis(un_analyzed, client)
+            except Exception as e:
+                print(f"用户画像分析失败，使用空画像结果继续: {e}")
+                result = {"profile": "", "private": "None", "assistant_knowledge": ""}
             new_profile = result["profile"]
             new_private = result["private"]
             assistant_knowledge = result["assistant_knowledge"]
             
             if old_profile:
-                updated_profile = gpt_update_profile(old_profile, new_profile, client)
+                try:
+                    updated_profile = gpt_update_profile(old_profile, new_profile, client)
+                except Exception as e:
+                    print(f"用户画像合并失败，保留旧画像: {e}")
+                    updated_profile = old_profile
             else:
                 updated_profile = new_profile
                 
@@ -156,7 +164,11 @@ def generate_system_response_with_meta(query, short_mem, long_mem, retrieval_que
         {"role": "user", "content": user_prompt}
     ]
     
-    response = client.chat_completion(model="gpt-4o-mini", messages=messages, temperature=0.7, max_tokens=2000)
+    try:
+        response = client.chat_completion(model="gpt-4o-mini", messages=messages, temperature=0.7, max_tokens=2000)
+    except Exception as e:
+        print(f"生成最终回答失败，返回空答案: {e}")
+        response = ""
     return response, system_prompt, user_prompt
 
 def process_conversation(conversation_data):

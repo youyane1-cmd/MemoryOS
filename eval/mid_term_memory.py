@@ -79,7 +79,11 @@ class MidTermMemory:
         session_id = generate_id("session")
         summary_vec = get_embedding(summary)
         summary_vec = normalize_vector(summary_vec).tolist()
-        summary_keywords = list(llm_extract_keywords(summary, client=client))
+        try:
+            summary_keywords = list(llm_extract_keywords(summary, client=client))
+        except Exception as e:
+            print(f"中期记忆：摘要关键词提取失败，使用空关键词: {e}")
+            summary_keywords = []
         
         new_details = []
         for page in details:
@@ -88,7 +92,11 @@ class MidTermMemory:
             full_text = f"User: {page.get('user_input','')} Assiant: {page.get('agent_response','')}"
             inp_vec = get_embedding(full_text)
             inp_vec = normalize_vector(inp_vec).tolist()
-            page_keywords = list(llm_extract_keywords(full_text, client=client))
+            try:
+                page_keywords = list(llm_extract_keywords(full_text, client=client))
+            except Exception as e:
+                print(f"中期记忆：页面关键词提取失败，使用空关键词: {e}")
+                page_keywords = []
             page["page_embedding"] = inp_vec
             page["page_keywords"] = page_keywords
             page["preloaded"] = False
@@ -197,7 +205,11 @@ class MidTermMemory:
         query_arr = np.array([query_vec], dtype=np.float32)
         distances, indices = index.search(query_arr, top_k)
         
-        query_keywords = llm_extract_keywords(query, client)
+        try:
+            query_keywords = llm_extract_keywords(query, client)
+        except Exception as e:
+            print(f"中期记忆：查询关键词提取失败，使用空关键词: {e}")
+            query_keywords = set()
         current_time = datetime.now()
         results = []
         

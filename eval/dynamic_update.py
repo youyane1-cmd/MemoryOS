@@ -36,12 +36,16 @@ Continuous?""".format(
             {"role": "user", "content": prompt}
         ]
         
-        response = self.client.chat_completion(
-            model="gpt-4o-mini",
-            messages=messages,
-            temperature=0.0,
-            max_tokens=10
-        )
+        try:
+            response = self.client.chat_completion(
+                model="gpt-4o-mini",
+                messages=messages,
+                temperature=0.0,
+                max_tokens=10
+            )
+        except Exception as e:
+            print(f"连续性判断失败，按不连续处理: {e}")
+            return False
         
         return response.strip().lower() == "true"
 
@@ -79,12 +83,16 @@ Continuous?""".format(
             {"role": "user", "content": prompt}
         ]
         
-        return self.client.chat_completion(
-            model="gpt-4o-mini",
-            messages=messages,
-            temperature=0.3,
-            max_tokens=100
-        ).strip()
+        try:
+            return self.client.chat_completion(
+                model="gpt-4o-mini",
+                messages=messages,
+                temperature=0.3,
+                max_tokens=100
+            ).strip()
+        except Exception as e:
+            print(f"生成 meta-info 失败，返回空 meta-info: {e}")
+            return ""
 
     def _update_connected_pages(self, page_id, new_meta_info):
         connected_pages = []
@@ -164,7 +172,11 @@ Continuous?""".format(
         # 3. 将所有用户输入拼接用于主题分析
         input_text = "\n".join([f"User: {page.get('user_input','')}\n" for page in pages])
         print("动态更新：调用 GPT 生成多子主题摘要...")
-        multi_summary = gpt_generate_multi_summary(input_text, self.client)
+        try:
+            multi_summary = gpt_generate_multi_summary(input_text, self.client)
+        except Exception as e:
+            print(f"动态更新：多子主题摘要生成失败，跳过本批中期记忆插入: {e}")
+            multi_summary = {"input": input_text, "summaries": []}
         
         # 4. 按主题分组插入中期记忆
         for summary_dict in multi_summary.get("summaries", []):
