@@ -4,7 +4,7 @@ services:
     image: memoryos-eval-api:latest
     container_name: memoryos-api
     ports:
-      - "8000:8000"
+      - "18002:8000"
     environment:
       - MEMORYOS_API_DATA_DIR=/app/eval/api_memory_data
     volumes:
