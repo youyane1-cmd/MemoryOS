@@ -2,4 +2,4 @@
 set -e
 
 python main_loco_parse.py
-python evalution_loco.py
+# python evalution_loco.py

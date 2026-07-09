@@ -10,6 +10,7 @@ import utils
 import re
 import os
 import time
+import requests
 # Initialize OpenAI client
 client = OpenAIClient(
     api_key='',
@@ -18,6 +19,15 @@ client = OpenAIClient(
 
 # Heat threshold
 H_THRESHOLD = 5.0
+REQUEST_TIMEOUT = int(os.getenv("MEMORYOS_API_TIMEOUT", "600"))
+
+def normalize_api_base_url(url):
+    url = url.strip().rstrip("/")
+    if not url.startswith(("http://", "https://")):
+        url = f"http://{url}"
+    return url
+
+API_BASE_URL = normalize_api_base_url(os.getenv("MEMORYOS_API_BASE_URL", "http://127.0.0.1:8000"))
 
 def load_json_list(file_path):
     if not os.path.exists(file_path):
@@ -39,6 +49,47 @@ def cleanup_sample_memory_files(sample_id):
                 print(f"已删除未完成样本的残留文件：{file_path}")
             except Exception as e:
                 print(f"删除残留文件 {file_path} 失败：{e}")
+
+def call_clear_memory(user_id):
+    resp = requests.delete(
+        f"{API_BASE_URL}/memory/{user_id}",
+        timeout=REQUEST_TIMEOUT
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+def call_add_memory(user_id, dialogs):
+    resp = requests.post(
+        f"{API_BASE_URL}/memory/add",
+        json={
+            "user_id": user_id,
+            "dialogs": dialogs,
+        },
+        timeout=REQUEST_TIMEOUT
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+def call_get_response(user_id, qa_pairs):
+    payload_qa = [
+        {
+            "question": qa.get("question", ""),
+            "answer": qa.get("answer", ""),
+            "adversarial_answer": qa.get("adversarial_answer", ""),
+            "category": qa.get("category", ""),
+        }
+        for qa in qa_pairs
+    ]
+    resp = requests.post(
+        f"{API_BASE_URL}/memory/response",
+        json={
+            "user_id": user_id,
+            "qa": payload_qa,
+        },
+        timeout=REQUEST_TIMEOUT
+    )
+    resp.raise_for_status()
+    return resp.json()
 
 def update_user_profile_from_top_segment(mid_mem, long_mem, sample_id, client):
     """
@@ -221,9 +272,9 @@ def main():
     # 创建记忆文件存储目录
     os.makedirs("mem_tmp_loco_final", exist_ok=True)
     
-    # Load locomo10 dataset
+    # Load longmemeval_s_locomo dataset
     try:
-        with open("locomo10.json", "r", encoding="utf-8") as f:
+        with open("longmemeval_s_locomo.json", "r", encoding="utf-8") as f:
             dataset = json.load(f)
         print(f"成功加载数据集，共 {len(dataset)} 个样本")
     except FileNotFoundError:
@@ -276,102 +327,49 @@ def main():
         speaker_a = conversation_data["speaker_a"]
         speaker_b = conversation_data["speaker_b"]
         
-        # Initialize memory modules
-        short_mem = ShortTermMemory(max_capacity=1, file_path=f"mem_tmp_loco_final/{sample_id}_short_term.json")
-        mid_mem = MidTermMemory(max_capacity=2000, file_path=f"mem_tmp_loco_final/{sample_id}_mid_term.json")
-        long_mem = LongTermMemory(file_path=f"mem_tmp_loco_final/{sample_id}_long_term.json")
-        dynamic_updater = DynamicUpdate(short_mem, mid_mem, long_mem, topic_similarity_threshold=0.6, client=client)
-        retrieval_system = RetrievalAndAnswer(short_mem, mid_mem, long_mem, dynamic_updater, queue_capacity=10)
-        
-        # Store conversation history in memory system
-        register_token_start = utils.TOTAL_LLM_TOKENS
-        register_time_start = time.time()
-        for dialog in processed_dialogs:
-            short_mem.add_qa_pair(dialog)
-            if short_mem.is_full():
-                dynamic_updater.bulk_evict_and_update_mid_term()
-            update_user_profile_from_top_segment(mid_mem, long_mem, sample_id, client)
-        register_tokens = utils.TOTAL_LLM_TOKENS - register_token_start
-        register_seconds = time.time() - register_time_start
+        # 评测脚本用 sample_id 作为远程服务的 user_id，保证每个样本对应一套独立记忆。
+        user_id = sample_id
+        try:
+            clear_result = call_clear_memory(user_id)
+            print(f"  清理远程记忆：user_id={user_id}，删除 {len(clear_result.get('deleted_files', []))} 个文件")
+        except Exception as e:
+            print(f"清理远程记忆失败，样本 {sample_id} 跳过：{e}")
+            continue
+
+        # Store conversation history in memory system through API
+        print(f"  注册记忆：调用 /memory/add，user_id={user_id}，共 {len(processed_dialogs)} 轮对话")
+        try:
+            add_result = call_add_memory(user_id, processed_dialogs)
+        except Exception as e:
+            print(f"注册记忆失败，样本 {sample_id} 跳过：{e}")
+            continue
+        register_tokens = add_result.get("register_tokens", 0)
+        register_seconds = add_result.get("register_seconds", 0)
         
         # Process QA pairs
         qa_count = len(qa_pairs)
-        e2e_token_start = utils.TOTAL_LLM_TOKENS
-        e2e_time_start = time.time()
         sample_results = []
-        for qa_idx, qa in enumerate(qa_pairs):
-            print(f"  处理问答 {qa_idx + 1}/{qa_count}")
-            question = qa["question"]
-            original_answer = qa.get("answer", "")
-            category = qa["category"]
-            evidence = qa.get("evidence", "")
-            if(original_answer == ""):
-                original_answer = qa.get("adversarial_answer", "")
-            # Retrieve and generate answer
-            retrieval_result = retrieval_system.retrieve(
-                question, 
-                segment_threshold=0.1, 
-                page_threshold=0.1, 
-                knowledge_threshold=0.1, 
-                client=client
-            )
-            
-            # Generate meta data for the conversation
-            meta_data = {
-                "sample_id": sample_id,
-                "speaker_a": speaker_a,
-                "speaker_b": speaker_b,
-                "category": category,
-                "evidence": evidence
-            }
-            
-            system_answer, system_prompt, user_prompt = generate_system_response_with_meta(
-                question, 
-                short_mem, 
-                long_mem, 
-                retrieval_result["retrieval_queue"], 
-                retrieval_result["long_term_knowledge"],
-                client, 
-                sample_id, 
-                speaker_a, 
-                speaker_b, 
-                meta_data
-            )
-            retrieval_context = {
-                "retrieved_at": retrieval_result.get("retrieved_at", ""),
-                "mid_term_memory": [
-                    {
-                        "page_id": page.get("page_id", ""),
-                        "user_input": page.get("user_input", ""),
-                        "agent_response": page.get("agent_response", ""),
-                        "timestamp": page.get("timestamp", ""),
-                        "meta_info": page.get("meta_info", ""),
-                    }
-                    for page in retrieval_result.get("retrieval_queue", [])
-                ],
-                "long_term_knowledge": [
-                    {
-                        "knowledge": item.get("knowledge", "")
-                    }
-                    for item in retrieval_result.get("long_term_knowledge", [])
-                ],
-            }
-            
-            # Save result for the current QA pair
+        print(f"  批量问答：调用 /memory/response，user_id={user_id}，共 {qa_count} 个问题")
+        try:
+            response_result = call_get_response(user_id, qa_pairs)
+        except Exception as e:
+            print(f"批量问答失败，样本 {sample_id} 跳过：{e}")
+            continue
+        e2e_tokens = response_result.get("e2e_tokens", 0)
+        e2e_seconds = response_result.get("e2e_seconds", 0)
+
+        for item in response_result.get("results", []):
             sample_results.append({
                 "sample_id": sample_id,
                 "speaker_a": speaker_a,
                 "speaker_b": speaker_b,
-                "question": question,
-                "system_answer": system_answer,
-                "original_answer": original_answer,
-                "category": category,
-                "evidence": evidence,
-                "retrieval_context": retrieval_context,
-                "timestamp": get_timestamp(),
+                "question": item.get("question", ""),
+                "system_answer": item.get("system_answer", ""),
+                "original_answer": item.get("original_answer", ""),
+                "category": item.get("category", ""),
+                "retrieval_context": item.get("retrieval_context", {}),
+                "timestamp": item.get("timestamp", get_timestamp()),
             })
-        e2e_tokens = utils.TOTAL_LLM_TOKENS - e2e_token_start
-        e2e_seconds = time.time() - e2e_time_start
         results.extend(sample_results)
         token_usage_results.append({
             "sample_id": sample_id,

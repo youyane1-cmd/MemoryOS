@@ -1,7 +1,31 @@
 services:
-  memoryos-eval:
+  memoryos-api:
     build: .
-    container_name: memoryos-eval
+    image: memoryos-eval-api:latest
+    container_name: memoryos-api
+    ports:
+      - "8000:8000"
+    environment:
+      - MEMORYOS_API_DATA_DIR=/app/eval/api_memory_data
     volumes:
-      - /data/memoryos-result:/app/eval/mem_tmp_loco_final
-    command: ./run_eval.sh
+      - /data/memoryos-api-data:/app/eval/api_memory_data
+    command: uvicorn api_server:app --host 0.0.0.0 --port 8000
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  # memoryos-eval:
+  #   image: memoryos-eval-api:latest
+  #   container_name: memoryos-eval
+  #   depends_on:
+  #     memoryos-api:
+  #       condition: service_healthy
+  #   environment:
+  #     - MEMORYOS_API_BASE_URL=http://memoryos-api:8000
+  #     - MEMORYOS_API_TIMEOUT=600
+  #   volumes:
+  #     - /data/memoryos-result:/app/eval/mem_tmp_loco_final
+  #   command: ./run_eval.sh
