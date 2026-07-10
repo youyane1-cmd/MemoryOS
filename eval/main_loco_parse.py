@@ -1,16 +1,7 @@
-import json
-from datetime import datetime, timedelta
-from short_term_memory import ShortTermMemory
-from mid_term_memory import MidTermMemory
-from long_term_memory import LongTermMemory
-from dynamic_update import DynamicUpdate
-from retrieval_and_answer import RetrievalAndAnswer
-from utils import OpenAIClient, gpt_generate_answer, gpt_extract_theme, gpt_update_profile, gpt_generate_multi_summary, get_timestamp, llm_extract_keywords, gpt_personality_analysis
-import utils
 import re
 import os
-import time
 import requests
+from utils import OpenAIClient, get_timestamp, gpt_personality_analysis, gpt_update_profile
 # Initialize OpenAI client
 client = OpenAIClient(
     api_key='',
@@ -28,27 +19,6 @@ def normalize_api_base_url(url):
     return url
 
 API_BASE_URL = normalize_api_base_url(os.getenv("MEMORYOS_API_BASE_URL", "http://127.0.0.1:8000"))
-
-def load_json_list(file_path):
-    if not os.path.exists(file_path):
-        return []
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, list) else []
-    except Exception as e:
-        print(f"读取 {file_path} 失败，将使用空列表：{e}")
-        return []
-
-def cleanup_sample_memory_files(sample_id):
-    for suffix in ["short_term", "mid_term", "long_term"]:
-        file_path = f"mem_tmp_loco_final/{sample_id}_{suffix}.json"
-        if os.path.exists(file_path):
-            try:
-                os.remove(file_path)
-                print(f"已删除未完成样本的残留文件：{file_path}")
-            except Exception as e:
-                print(f"删除残留文件 {file_path} 失败：{e}")
 
 def call_clear_memory(user_id):
     resp = requests.delete(
@@ -264,141 +234,3 @@ def process_conversation(conversation_data):
                     })
     
     return processed
-
-def main():
-    # 直接处理整个数据集，不需要命令行参数
-    print("开始处理整个locomo10数据集...")
-    
-    # 创建记忆文件存储目录
-    os.makedirs("mem_tmp_loco_final", exist_ok=True)
-    
-    # Load longmemeval_s_locomo dataset
-    try:
-        with open("longmemeval_s_locomo.json", "r", encoding="utf-8") as f:
-            dataset = json.load(f)
-        print(f"成功加载数据集，共 {len(dataset)} 个样本")
-    except FileNotFoundError:
-        print("错误：找不到 locomo10.json 文件，请确保文件在当前目录中")
-        return
-    except Exception as e:
-        print(f"加载数据集时出错：{e}")
-        return
-    
-    # 处理整个数据集，不进行切片
-    # dataset = dataset  # 处理全部数据
-    
-    # 设置固定的输出文件名
-    output_file = "mem_tmp_loco_final/all_loco_results.json"
-    run_usage_output_file = "mem_tmp_loco_final/run_usage_loco.json"
-    
-    token_usage_results = load_json_list(run_usage_output_file)
-    completed_sample_ids = {
-        item.get("sample_id")
-        for item in token_usage_results
-        if item.get("sample_id")
-    }
-    results = [
-        item
-        for item in load_json_list(output_file)
-        if item.get("sample_id") in completed_sample_ids
-    ]
-    print(f"已加载完成样本 {len(completed_sample_ids)} 个，已有结果 {len(results)} 条。")
-    total_samples = len(dataset)
-    
-    for idx, sample in enumerate(dataset):
-        print(f"正在处理样本 {idx + 1}/{total_samples}: {sample.get('sample_id', 'unknown')}")
-        
-        sample_id = sample.get("sample_id", "unknown_sample")
-        if sample_id in completed_sample_ids:
-            print(f"样本 {sample_id} 已在 usage 文件中记录完成，跳过。")
-            continue
-        
-        cleanup_sample_memory_files(sample_id)
-        conversation_data = sample["conversation"]
-        qa_pairs = sample["qa"]
-        
-        # Process conversation data
-        processed_dialogs = process_conversation(conversation_data)
-        
-        if not processed_dialogs:
-            print(f"样本 {sample_id} 没有有效的对话数据，跳过")
-            continue
-            
-        speaker_a = conversation_data["speaker_a"]
-        speaker_b = conversation_data["speaker_b"]
-        
-        # 评测脚本用 sample_id 作为远程服务的 user_id，保证每个样本对应一套独立记忆。
-        user_id = sample_id
-        try:
-            clear_result = call_clear_memory(user_id)
-            print(f"  清理远程记忆：user_id={user_id}，删除 {len(clear_result.get('deleted_files', []))} 个文件")
-        except Exception as e:
-            print(f"清理远程记忆失败，样本 {sample_id} 跳过：{e}")
-            continue
-
-        # Store conversation history in memory system through API
-        print(f"  注册记忆：调用 /memory/add，user_id={user_id}，共 {len(processed_dialogs)} 轮对话")
-        try:
-            add_result = call_add_memory(user_id, processed_dialogs)
-        except Exception as e:
-            print(f"注册记忆失败，样本 {sample_id} 跳过：{e}")
-            continue
-        register_tokens = add_result.get("register_tokens", 0)
-        register_seconds = add_result.get("register_seconds", 0)
-        
-        # Process QA pairs
-        qa_count = len(qa_pairs)
-        sample_results = []
-        print(f"  批量问答：调用 /memory/response，user_id={user_id}，共 {qa_count} 个问题")
-        try:
-            response_result = call_get_response(user_id, qa_pairs)
-        except Exception as e:
-            print(f"批量问答失败，样本 {sample_id} 跳过：{e}")
-            continue
-        e2e_tokens = response_result.get("e2e_tokens", 0)
-        e2e_seconds = response_result.get("e2e_seconds", 0)
-
-        for item in response_result.get("results", []):
-            sample_results.append({
-                "sample_id": sample_id,
-                "speaker_a": speaker_a,
-                "speaker_b": speaker_b,
-                "question": item.get("question", ""),
-                "system_answer": item.get("system_answer", ""),
-                "original_answer": item.get("original_answer", ""),
-                "category": item.get("category", ""),
-                "retrieval_context": item.get("retrieval_context", {}),
-                "timestamp": item.get("timestamp", get_timestamp()),
-            })
-        results.extend(sample_results)
-        token_usage_results.append({
-            "sample_id": sample_id,
-            "register_tokens": register_tokens,
-            "register_seconds": register_seconds,
-            "e2e_tokens": e2e_tokens,
-            "e2e_seconds": e2e_seconds,
-            "qa_count": qa_count,
-        })
-        completed_sample_ids.add(sample_id)
-    
-        # 每处理完一个样本就保存一次结果（实时保存）
-        try:
-            with open(output_file, "w", encoding="utf-8") as f:
-                json.dump(results, f, ensure_ascii=False, indent=2)
-            with open(run_usage_output_file, "w", encoding="utf-8") as f:
-                json.dump(token_usage_results, f, ensure_ascii=False, indent=2)
-            print(f"样本 {idx + 1} 处理完成，结果已保存到 {output_file}")
-        except Exception as e:
-            print(f"保存结果时出错：{e}")
-    
-    # 最终保存
-    try:
-        with open(output_file, "w", encoding="utf-8") as f:
-            json.dump(results, f, ensure_ascii=False, indent=2)
-        with open(run_usage_output_file, "w", encoding="utf-8") as f:
-            json.dump(token_usage_results, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"最终保存结果时出错：{e}")
-
-if __name__ == "__main__":
-    main()

@@ -1,5 +1,5 @@
 #!/bin/sh
 set -e
 
-python main_loco_parse.py
+python run_loco_eval_api.py
 # python evalution_loco.py

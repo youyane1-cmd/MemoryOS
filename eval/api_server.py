@@ -170,98 +170,104 @@ def clear_memory(user_id: str):
 
 @app.post("/memory/add", response_model=AddMemoryResponse)
 def add_memory(req: AddMemoryRequest):
-    short_mem, mid_mem, long_mem, dynamic_updater, _ = _build_memory(req.user_id)
+    token_state = utils.reset_request_tokens()
+    try:
+        short_mem, mid_mem, long_mem, dynamic_updater, _ = _build_memory(req.user_id)
 
-    token_start = utils.TOTAL_LLM_TOKENS
-    time_start = time.time()
+        time_start = time.time()
 
-    for dialog in req.dialogs:
-        short_mem.add_qa_pair(_dialog_to_dict(dialog))
-        if short_mem.is_full():
-            dynamic_updater.bulk_evict_and_update_mid_term()
-        update_user_profile_from_top_segment(mid_mem, long_mem, req.user_id, client)
+        for dialog in req.dialogs:
+            short_mem.add_qa_pair(_dialog_to_dict(dialog))
+            if short_mem.is_full():
+                dynamic_updater.bulk_evict_and_update_mid_term()
+            update_user_profile_from_top_segment(mid_mem, long_mem, req.user_id, client)
 
-    return AddMemoryResponse(
-        status="ok",
-        user_id=req.user_id,
-        registered_turns=len(req.dialogs),
-        register_seconds=time.time() - time_start,
-        register_tokens=utils.TOTAL_LLM_TOKENS - token_start,
-        memory_files=_memory_files(req.user_id),
-    )
+        return AddMemoryResponse(
+            status="ok",
+            user_id=req.user_id,
+            registered_turns=len(req.dialogs),
+            register_seconds=time.time() - time_start,
+            register_tokens=utils.get_request_tokens(),
+            memory_files=_memory_files(req.user_id),
+        )
+    finally:
+        utils.restore_request_tokens(token_state)
 
 
 @app.post("/memory/response", response_model=ResponseBatchResponse)
 def get_response(req: ResponseBatchRequest):
-    short_mem, _mid_mem, long_mem, _dynamic_updater, retrieval_system = _build_memory(req.user_id)
+    token_state = utils.reset_request_tokens()
+    try:
+        short_mem, _mid_mem, long_mem, _dynamic_updater, retrieval_system = _build_memory(req.user_id)
 
-    token_start = utils.TOTAL_LLM_TOKENS
-    time_start = time.time()
-    results = []
+        time_start = time.time()
+        results = []
 
-    for qa in req.qa:
-        retrieval_result = retrieval_system.retrieve(
-            qa.question,
-            segment_threshold=SEGMENT_THRESHOLD,
-            page_threshold=PAGE_THRESHOLD,
-            knowledge_threshold=KNOWLEDGE_THRESHOLD,
-            client=client,
-        )
-        meta_data = {
-            "user_id": req.user_id,
-            "category": qa.category or "",
-        }
-        system_answer, _system_prompt, _user_prompt = generate_system_response_with_meta(
-            qa.question,
-            short_mem,
-            long_mem,
-            retrieval_result["retrieval_queue"],
-            retrieval_result["long_term_knowledge"],
-            client,
-            req.user_id,
-            SPEAKER_A,
-            SPEAKER_B,
-            meta_data,
-        )
-        retrieval_context = {
-            "retrieved_at": retrieval_result.get("retrieved_at", ""),
-            "mid_term_memory": [
-                {
-                    "page_id": page.get("page_id", ""),
-                    "user_input": page.get("user_input", ""),
-                    "agent_response": page.get("agent_response", ""),
-                    "timestamp": page.get("timestamp", ""),
-                    "meta_info": page.get("meta_info", ""),
-                }
-                for page in retrieval_result.get("retrieval_queue", [])
-            ],
-            "long_term_knowledge": [
-                {
-                    "knowledge": item.get("knowledge", "")
-                }
-                for item in retrieval_result.get("long_term_knowledge", [])
-            ],
-        }
-        results.append(
-            {
+        for qa in req.qa:
+            retrieval_result = retrieval_system.retrieve(
+                qa.question,
+                segment_threshold=SEGMENT_THRESHOLD,
+                page_threshold=PAGE_THRESHOLD,
+                knowledge_threshold=KNOWLEDGE_THRESHOLD,
+                client=client,
+            )
+            meta_data = {
                 "user_id": req.user_id,
-                "question": qa.question,
-                "system_answer": system_answer,
-                "original_answer": _original_answer(qa),
                 "category": qa.category or "",
-                "retrieval_context": retrieval_context,
-                "timestamp": get_timestamp(),
             }
-        )
+            system_answer, _system_prompt, _user_prompt = generate_system_response_with_meta(
+                qa.question,
+                short_mem,
+                long_mem,
+                retrieval_result["retrieval_queue"],
+                retrieval_result["long_term_knowledge"],
+                client,
+                req.user_id,
+                SPEAKER_A,
+                SPEAKER_B,
+                meta_data,
+            )
+            retrieval_context = {
+                "retrieved_at": retrieval_result.get("retrieved_at", ""),
+                "mid_term_memory": [
+                    {
+                        "page_id": page.get("page_id", ""),
+                        "user_input": page.get("user_input", ""),
+                        "agent_response": page.get("agent_response", ""),
+                        "timestamp": page.get("timestamp", ""),
+                        "meta_info": page.get("meta_info", ""),
+                    }
+                    for page in retrieval_result.get("retrieval_queue", [])
+                ],
+                "long_term_knowledge": [
+                    {
+                        "knowledge": item.get("knowledge", "")
+                    }
+                    for item in retrieval_result.get("long_term_knowledge", [])
+                ],
+            }
+            results.append(
+                {
+                    "user_id": req.user_id,
+                    "question": qa.question,
+                    "system_answer": system_answer,
+                    "original_answer": _original_answer(qa),
+                    "category": qa.category or "",
+                    "retrieval_context": retrieval_context,
+                    "timestamp": get_timestamp(),
+                }
+            )
 
-    return ResponseBatchResponse(
-        status="ok",
-        user_id=req.user_id,
-        total_questions=len(req.qa),
-        e2e_seconds=time.time() - time_start,
-        e2e_tokens=utils.TOTAL_LLM_TOKENS - token_start,
-        results=results,
-    )
+        return ResponseBatchResponse(
+            status="ok",
+            user_id=req.user_id,
+            total_questions=len(req.qa),
+            e2e_seconds=time.time() - time_start,
+            e2e_tokens=utils.get_request_tokens(),
+            results=results,
+        )
+    finally:
+        utils.restore_request_tokens(token_state)
 
 
 if __name__ == "__main__":

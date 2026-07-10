@@ -139,5 +139,5 @@ def main(file_path: str):
     print(f"Excel result saved to {output_file}")
 
 if __name__ == "__main__":
-    file_path = "mem_tmp_loco_final/all_loco_results.json"  # 使用main_loco_parse.py生成的文件
+    file_path = "mem_tmp_loco_final/all_loco_results.json"  # 使用run_loco_eval_api.py生成的文件
     main(file_path)

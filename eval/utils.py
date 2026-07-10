@@ -1,5 +1,7 @@
 import time
 import uuid
+from contextvars import ContextVar
+
 import numpy as np
 from openai import OpenAI
 
@@ -7,6 +9,23 @@ CHAT_MODEL = "gpt-5.4-mini"
 EMBEDDING_MODEL = "embedding"
 MAX_RETRIES = 6
 TOTAL_LLM_TOKENS = 0
+REQUEST_LLM_TOKENS = ContextVar("REQUEST_LLM_TOKENS", default=0)
+
+
+def reset_request_tokens():
+    return REQUEST_LLM_TOKENS.set(0)
+
+
+def restore_request_tokens(token):
+    REQUEST_LLM_TOKENS.reset(token)
+
+
+def get_request_tokens():
+    return REQUEST_LLM_TOKENS.get()
+
+
+def add_request_tokens(tokens):
+    REQUEST_LLM_TOKENS.set(REQUEST_LLM_TOKENS.get() + tokens)
 
 gpt_client = OpenAI(
     api_key="dummy",
@@ -62,6 +81,7 @@ class OpenAIClient:
                     if not total_tokens and isinstance(usage, dict):
                         total_tokens = usage.get("total_tokens", 0)
                     TOTAL_LLM_TOKENS += total_tokens
+                    add_request_tokens(total_tokens)
                 return response.choices[0].message.content.strip()
             except Exception as e:
                 print(f"GPT 接口调用失败，第 {attempt + 1}/{MAX_RETRIES} 次: {e}")
