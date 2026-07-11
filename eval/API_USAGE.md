@@ -22,7 +22,7 @@ http://10.110.159.20:18002
 - 请求体和响应体均为 JSON。
 - `user_id` 必填，不能为空。服务会按 `user_id` 生成独立的记忆文件。
 - `dialogs` 和 `qa` 都必须是非空数组。
-- `register_tokens` 和 `e2e_tokens` 是本次接口调用期间 LLM token 的差值统计；底层 token 计数器是服务进程级全局变量，并发请求时可能互相影响。
+- `register_tokens` 和 `e2e_tokens` 是本次接口调用期间 LLM token 的统计，按请求上下文隔离。
 - 建议请求超时时间设置为 `600` 秒。
 
 ## 1. 健康检查
@@ -49,7 +49,7 @@ curl http://10.110.159.20:18002/health
 
 ## 2. 添加用户记忆
 
-把一批对话写入指定用户的记忆系统。
+把一批对话写入指定用户的记忆系统。该接口会等全部注册完成后再返回；注册过程中也会写入进度文件，可通过 `GET /memory/progress/{user_id}` 查询。
 
 ### 请求
 
@@ -225,20 +225,107 @@ print(response.json())
 | `results[].system_answer` | string | MemoryOS 生成的回答 |
 | `results[].retrieval_context` | object | 检索到的中期记忆和长期知识上下文 |
 
-## 4. 查询用户记忆文件状态
+## 4. 异步添加用户记忆
 
-查看指定用户对应的短期、中期、长期记忆文件是否存在。
+适合 240 轮这类耗时较长的注册任务。接口收到请求后会立即返回，后台继续注册记忆。调用方不需要长时间等待 HTTP 响应，可以使用 `GET /memory/progress/{user_id}` 查询注册进度。
 
 ### 请求
 
 ```http
-GET /memory/files/{user_id}
+POST /memory/add_async
+Content-Type: application/json
+```
+
+请求体与 `POST /memory/add` 相同。
+
+字段说明同 `POST /memory/add`：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `user_id` | string | 是 | 用户唯一标识，不能为空 |
+| `dialogs` | array | 是 | 对话数组，至少 1 条 |
+| `dialogs[].user_input` | string | 是 | 用户输入 |
+| `dialogs[].agent_response` | string | 是 | 助手回复 |
+| `dialogs[].timestamp` | string | 否 | 对话发生时间，建议使用 `YYYY-MM-DD HH:mm:ss` 格式 |
+
+### 示例
+
+```bash
+curl -X POST http://10.110.159.20:18002/memory/add_async \
+  -H "Content-Type: application/json" \
+  -d '{"user_id":"demo_user","dialogs":[{"user_input":"hello","agent_response":"hi"}]}'
+```
+
+### Python 调用示例
+
+```python
+import requests
+
+api_base_url = "http://10.110.159.20:18002"
+
+payload = {
+    "user_id": "demo_user",
+    "dialogs": [
+        {
+            "user_input": "I passed the College English Test Band 6 in December 2023.",
+            "agent_response": "Congratulations. That can qualify you for advanced seminars.",
+            "timestamp": "2023-12-15 10:00:00",
+        }
+    ],
+}
+
+response = requests.post(f"{api_base_url}/memory/add_async", json=payload, timeout=60)
+response.raise_for_status()
+print(response.json())
+```
+
+### 响应
+
+```json
+{
+  "status": "accepted",
+  "user_id": "demo_user",
+  "total_dialogs": 1,
+  "progress_file": "api_memory_data/demo_user_progress.json"
+}
+```
+
+字段说明：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `status` | string | 固定为 `accepted`，表示任务已提交 |
+| `user_id` | string | 本次提交的用户 ID |
+| `total_dialogs` | integer | 本次提交的对话条数 |
+| `progress_file` | string | 该用户注册进度文件路径 |
+
+## 5. 查询记忆注册进度
+
+查询指定用户当前或最近一次记忆注册任务的进度。进度文件位于 `MEMORYOS_API_DATA_DIR` 下，命名为 `{user_id}_progress.json`。
+
+### 请求
+
+```http
+GET /memory/progress/{user_id}
 ```
 
 ### 示例
 
 ```bash
-curl http://10.110.159.20:18002/memory/files/demo_user
+curl http://10.110.159.20:18002/memory/progress/demo_user
+```
+
+### Python 调用示例
+
+```python
+import requests
+
+api_base_url = "http://10.110.159.20:18002"
+user_id = "demo_user"
+
+response = requests.get(f"{api_base_url}/memory/progress/{user_id}", timeout=30)
+response.raise_for_status()
+print(response.json())
 ```
 
 ### 响应
@@ -246,26 +333,43 @@ curl http://10.110.159.20:18002/memory/files/demo_user
 ```json
 {
   "user_id": "demo_user",
+  "updated_at": "2026-07-11 20:11:00",
+  "status": "running",
+  "total_dialogs": 240,
+  "processed_dialogs": 37,
+  "progress": 0.15416666666666667,
+  "register_seconds": 512.3,
+  "register_tokens": 12345,
+  "started_at": "2026-07-11 20:00:00",
   "memory_files": {
-    "short_term": {
-      "path": "api_memory_data/demo_user_short_term.json",
-      "exists": true
-    },
-    "mid_term": {
-      "path": "api_memory_data/demo_user_mid_term.json",
-      "exists": true
-    },
-    "long_term": {
-      "path": "api_memory_data/demo_user_long_term.json",
-      "exists": true
-    }
+    "short_term": "api_memory_data/demo_user_short_term.json",
+    "mid_term": "api_memory_data/demo_user_mid_term.json",
+    "long_term": "api_memory_data/demo_user_long_term.json"
   }
 }
 ```
 
-## 5. 清空用户记忆
+`status` 可能为 `queued`、`running`、`succeeded` 或 `failed`。如果任务失败，响应里会额外包含 `error` 字段。
 
-删除指定用户的短期、中期、长期记忆文件。
+字段说明：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `user_id` | string | 查询的用户 ID |
+| `updated_at` | string | 进度文件最近更新时间 |
+| `status` | string | 当前注册状态，可能为 `queued`、`running`、`succeeded`、`failed` |
+| `total_dialogs` | integer | 本次任务总对话条数 |
+| `processed_dialogs` | integer | 已处理完成的对话条数 |
+| `progress` | number | 注册进度，范围 0 到 1 |
+| `register_seconds` | number | 当前已耗时，单位秒 |
+| `register_tokens` | integer | 当前任务已统计的 LLM token |
+| `started_at` | string | 任务开始时间 |
+| `memory_files` | object | 该用户对应的短期、中期、长期记忆文件路径 |
+| `error` | string | 仅失败时返回，表示失败原因 |
+
+## 6. 清空用户记忆
+
+删除指定用户的短期、中期、长期记忆文件和注册进度文件。清库后，该用户的记忆会被清空；如果对应文件不存在，接口仍会返回 `ok`。
 
 ### 请求
 
@@ -279,6 +383,19 @@ DELETE /memory/{user_id}
 curl -X DELETE http://10.110.159.20:18002/memory/demo_user
 ```
 
+### Python 调用示例
+
+```python
+import requests
+
+api_base_url = "http://10.110.159.20:18002"
+user_id = "demo_user"
+
+response = requests.delete(f"{api_base_url}/memory/{user_id}", timeout=30)
+response.raise_for_status()
+print(response.json())
+```
+
 ### 响应
 
 ```json
@@ -288,12 +405,21 @@ curl -X DELETE http://10.110.159.20:18002/memory/demo_user
   "deleted_files": [
     "api_memory_data/demo_user_short_term.json",
     "api_memory_data/demo_user_mid_term.json",
-    "api_memory_data/demo_user_long_term.json"
+    "api_memory_data/demo_user_long_term.json",
+    "api_memory_data/demo_user_progress.json"
   ]
 }
 ```
 
 如果文件不存在，`deleted_files` 可能为空数组。
+
+字段说明：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `status` | string | 固定为 `ok` |
+| `user_id` | string | 被清空记忆的用户 ID |
+| `deleted_files` | array | 本次实际删除的文件路径列表 |
 
 ## 调用地址配置
 

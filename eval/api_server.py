@@ -1,10 +1,11 @@
+import json
 import os
 import re
 import time
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 import utils
@@ -96,6 +97,38 @@ def _memory_files(user_id: str) -> dict:
     }
 
 
+def _progress_file(user_id: str) -> Path:
+    safe_user_id = _safe_user_id(user_id)
+    return DATA_DIR / f"{safe_user_id}_progress.json"
+
+
+def _write_json_atomic(path: Path, data: dict):
+    temp_path = path.with_suffix(f"{path.suffix}.tmp")
+    with open(temp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(temp_path, path)
+
+
+def _write_progress(user_id: str, progress: dict):
+    progress_data = {
+        "user_id": user_id,
+        "updated_at": get_timestamp(),
+        **progress,
+    }
+    _write_json_atomic(_progress_file(user_id), progress_data)
+
+
+def _read_progress(user_id: str) -> dict:
+    path = _progress_file(user_id)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="progress file not found.")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="progress file is invalid.") from exc
+
+
 def _build_memory(user_id: str):
     files = _memory_files(user_id)
     short_mem = ShortTermMemory(
@@ -136,28 +169,110 @@ def _original_answer(qa: QAItem) -> str:
     return qa.answer or qa.adversarial_answer or ""
 
 
+def _register_memory(req: AddMemoryRequest) -> AddMemoryResponse:
+    token_state = utils.reset_request_tokens()
+    time_start = time.time()
+    started_at = get_timestamp()
+    total_dialogs = len(req.dialogs)
+
+    _write_progress(
+        req.user_id,
+        {
+            "status": "running",
+            "total_dialogs": total_dialogs,
+            "processed_dialogs": 0,
+            "progress": 0.0,
+            "register_seconds": 0.0,
+            "register_tokens": 0,
+            "started_at": started_at,
+            "memory_files": _memory_files(req.user_id),
+        },
+    )
+
+    try:
+        short_mem, mid_mem, long_mem, dynamic_updater, _ = _build_memory(req.user_id)
+
+        for index, dialog in enumerate(req.dialogs, start=1):
+            short_mem.add_qa_pair(_dialog_to_dict(dialog))
+            if short_mem.is_full():
+                dynamic_updater.bulk_evict_and_update_mid_term()
+            update_user_profile_from_top_segment(mid_mem, long_mem, req.user_id, client)
+
+            _write_progress(
+                req.user_id,
+                {
+                    "status": "running",
+                    "total_dialogs": total_dialogs,
+                    "processed_dialogs": index,
+                    "progress": index / total_dialogs,
+                    "register_seconds": time.time() - time_start,
+                    "register_tokens": utils.get_request_tokens(),
+                    "started_at": started_at,
+                    "memory_files": _memory_files(req.user_id),
+                },
+            )
+
+        response = AddMemoryResponse(
+            status="ok",
+            user_id=req.user_id,
+            registered_turns=total_dialogs,
+            register_seconds=time.time() - time_start,
+            register_tokens=utils.get_request_tokens(),
+            memory_files=_memory_files(req.user_id),
+        )
+
+        _write_progress(
+            req.user_id,
+            {
+                "status": "succeeded",
+                "total_dialogs": total_dialogs,
+                "processed_dialogs": total_dialogs,
+                "progress": 1.0,
+                "register_seconds": response.register_seconds,
+                "register_tokens": response.register_tokens,
+                "started_at": started_at,
+                "memory_files": response.memory_files,
+            },
+        )
+
+        return response
+    except Exception as exc:
+        current_progress = _read_progress(req.user_id) if _progress_file(req.user_id).exists() else {}
+        _write_progress(
+            req.user_id,
+            {
+                "status": "failed",
+                "total_dialogs": total_dialogs,
+                "processed_dialogs": current_progress.get("processed_dialogs", 0),
+                "progress": current_progress.get("progress", 0.0),
+                "register_seconds": time.time() - time_start,
+                "register_tokens": utils.get_request_tokens(),
+                "started_at": started_at,
+                "error": str(exc),
+                "memory_files": _memory_files(req.user_id),
+            },
+        )
+        raise
+    finally:
+        utils.restore_request_tokens(token_state)
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
 
-@app.get("/memory/files/{user_id}")
-def memory_file_status(user_id: str):
-    files = _memory_files(user_id)
-    return {
-        "user_id": user_id,
-        "memory_files": {
-            name: {"path": path, "exists": os.path.exists(path)}
-            for name, path in files.items()
-        },
-    }
+@app.get("/memory/progress/{user_id}")
+def memory_register_progress(user_id: str):
+    return _read_progress(user_id)
 
 
 @app.delete("/memory/{user_id}")
 def clear_memory(user_id: str):
     files = _memory_files(user_id)
     deleted_files = []
-    for path in files.values():
+    paths = list(files.values()) + [str(_progress_file(user_id))]
+    for path in paths:
         if os.path.exists(path):
             os.remove(path)
             deleted_files.append(path)
@@ -170,28 +285,31 @@ def clear_memory(user_id: str):
 
 @app.post("/memory/add", response_model=AddMemoryResponse)
 def add_memory(req: AddMemoryRequest):
-    token_state = utils.reset_request_tokens()
-    try:
-        short_mem, mid_mem, long_mem, dynamic_updater, _ = _build_memory(req.user_id)
+    return _register_memory(req)
 
-        time_start = time.time()
 
-        for dialog in req.dialogs:
-            short_mem.add_qa_pair(_dialog_to_dict(dialog))
-            if short_mem.is_full():
-                dynamic_updater.bulk_evict_and_update_mid_term()
-            update_user_profile_from_top_segment(mid_mem, long_mem, req.user_id, client)
-
-        return AddMemoryResponse(
-            status="ok",
-            user_id=req.user_id,
-            registered_turns=len(req.dialogs),
-            register_seconds=time.time() - time_start,
-            register_tokens=utils.get_request_tokens(),
-            memory_files=_memory_files(req.user_id),
-        )
-    finally:
-        utils.restore_request_tokens(token_state)
+@app.post("/memory/add_async")
+def add_memory_async(req: AddMemoryRequest, background_tasks: BackgroundTasks):
+    _write_progress(
+        req.user_id,
+        {
+            "status": "queued",
+            "total_dialogs": len(req.dialogs),
+            "processed_dialogs": 0,
+            "progress": 0.0,
+            "register_seconds": 0.0,
+            "register_tokens": 0,
+            "started_at": get_timestamp(),
+            "memory_files": _memory_files(req.user_id),
+        },
+    )
+    background_tasks.add_task(_register_memory, req)
+    return {
+        "status": "accepted",
+        "user_id": req.user_id,
+        "total_dialogs": len(req.dialogs),
+        "progress_file": str(_progress_file(req.user_id)),
+    }
 
 
 @app.post("/memory/response", response_model=ResponseBatchResponse)
