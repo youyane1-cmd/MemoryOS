@@ -118,6 +118,18 @@ def _write_progress(user_id: str, progress: dict):
     _write_json_atomic(_progress_file(user_id), progress_data)
 
 
+def _load_progress(user_id: str) -> dict:
+    path = _progress_file(user_id)
+    if not path.exists():
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except json.JSONDecodeError:
+        return {}
+
+
 def _read_progress(user_id: str) -> dict:
     path = _progress_file(user_id)
     if not path.exists():
@@ -172,19 +184,25 @@ def _original_answer(qa: QAItem) -> str:
 def _register_memory(req: AddMemoryRequest) -> AddMemoryResponse:
     token_state = utils.reset_request_tokens()
     time_start = time.time()
-    started_at = get_timestamp()
     total_dialogs = len(req.dialogs)
+
+    existing_progress = _load_progress(req.user_id)
+    already_processed = int(existing_progress.get("processed_dialogs", 0) or 0)
+    already_processed = max(0, min(already_processed, total_dialogs))
+    started_at = existing_progress.get("started_at") or get_timestamp()
+    registered_turns = 0
 
     _write_progress(
         req.user_id,
         {
             "status": "running",
             "total_dialogs": total_dialogs,
-            "processed_dialogs": 0,
-            "progress": 0.0,
+            "processed_dialogs": already_processed,
+            "progress": already_processed / total_dialogs if total_dialogs else 1.0,
             "register_seconds": 0.0,
             "register_tokens": 0,
             "started_at": started_at,
+            "resumed_from": already_processed,
             "memory_files": _memory_files(req.user_id),
         },
     )
@@ -193,10 +211,15 @@ def _register_memory(req: AddMemoryRequest) -> AddMemoryResponse:
         short_mem, mid_mem, long_mem, dynamic_updater, _ = _build_memory(req.user_id)
 
         for index, dialog in enumerate(req.dialogs, start=1):
+            # 断点续传：进度文件里已处理过的 dialog 直接跳过
+            if index <= already_processed:
+                continue
+
             short_mem.add_qa_pair(_dialog_to_dict(dialog))
             if short_mem.is_full():
                 dynamic_updater.bulk_evict_and_update_mid_term()
             update_user_profile_from_top_segment(mid_mem, long_mem, req.user_id, client)
+            registered_turns += 1
 
             _write_progress(
                 req.user_id,
@@ -208,6 +231,7 @@ def _register_memory(req: AddMemoryRequest) -> AddMemoryResponse:
                     "register_seconds": time.time() - time_start,
                     "register_tokens": utils.get_request_tokens(),
                     "started_at": started_at,
+                    "resumed_from": already_processed,
                     "memory_files": _memory_files(req.user_id),
                 },
             )
@@ -215,7 +239,7 @@ def _register_memory(req: AddMemoryRequest) -> AddMemoryResponse:
         response = AddMemoryResponse(
             status="ok",
             user_id=req.user_id,
-            registered_turns=total_dialogs,
+            registered_turns=registered_turns,
             register_seconds=time.time() - time_start,
             register_tokens=utils.get_request_tokens(),
             memory_files=_memory_files(req.user_id),
@@ -231,23 +255,28 @@ def _register_memory(req: AddMemoryRequest) -> AddMemoryResponse:
                 "register_seconds": response.register_seconds,
                 "register_tokens": response.register_tokens,
                 "started_at": started_at,
+                "resumed_from": already_processed,
                 "memory_files": response.memory_files,
             },
         )
 
         return response
     except Exception as exc:
-        current_progress = _read_progress(req.user_id) if _progress_file(req.user_id).exists() else {}
+        current_progress = _load_progress(req.user_id)
         _write_progress(
             req.user_id,
             {
                 "status": "failed",
                 "total_dialogs": total_dialogs,
-                "processed_dialogs": current_progress.get("processed_dialogs", 0),
-                "progress": current_progress.get("progress", 0.0),
+                "processed_dialogs": current_progress.get("processed_dialogs", already_processed),
+                "progress": current_progress.get(
+                    "progress",
+                    already_processed / total_dialogs if total_dialogs else 0.0,
+                ),
                 "register_seconds": time.time() - time_start,
                 "register_tokens": utils.get_request_tokens(),
                 "started_at": started_at,
+                "resumed_from": already_processed,
                 "error": str(exc),
                 "memory_files": _memory_files(req.user_id),
             },
@@ -290,16 +319,23 @@ def add_memory(req: AddMemoryRequest):
 
 @app.post("/memory/add_async")
 def add_memory_async(req: AddMemoryRequest, background_tasks: BackgroundTasks):
+    total_dialogs = len(req.dialogs)
+    existing_progress = _load_progress(req.user_id)
+    already_processed = int(existing_progress.get("processed_dialogs", 0) or 0)
+    already_processed = max(0, min(already_processed, total_dialogs))
+    started_at = existing_progress.get("started_at") or get_timestamp()
+
     _write_progress(
         req.user_id,
         {
             "status": "queued",
-            "total_dialogs": len(req.dialogs),
-            "processed_dialogs": 0,
-            "progress": 0.0,
+            "total_dialogs": total_dialogs,
+            "processed_dialogs": already_processed,
+            "progress": already_processed / total_dialogs if total_dialogs else 1.0,
             "register_seconds": 0.0,
             "register_tokens": 0,
-            "started_at": get_timestamp(),
+            "started_at": started_at,
+            "resumed_from": already_processed,
             "memory_files": _memory_files(req.user_id),
         },
     )
@@ -307,7 +343,8 @@ def add_memory_async(req: AddMemoryRequest, background_tasks: BackgroundTasks):
     return {
         "status": "accepted",
         "user_id": req.user_id,
-        "total_dialogs": len(req.dialogs),
+        "total_dialogs": total_dialogs,
+        "resumed_from": already_processed,
         "progress_file": str(_progress_file(req.user_id)),
     }
 
